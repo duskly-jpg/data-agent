@@ -87,7 +87,8 @@ async function generateCandidate(env, q, anchor) {
     messages: [{ role: 'system', content: sys }, { role: 'user', content: q }],
     max_tokens: 512,
   });
-  const text = typeof resp === 'string' ? resp : (resp.response || resp.text || JSON.stringify(resp));
+  let text = typeof resp === 'string' ? resp : (resp.response || resp.text || resp.result?.response || JSON.stringify(resp));
+  if (typeof text !== 'string') text = JSON.stringify(text);
   const hit = text.match(/\{[\s\S]*\}/);
   if (!hit) throw new Error('模型输出未包含 JSON');
   const obj = JSON.parse(hit[0]);
