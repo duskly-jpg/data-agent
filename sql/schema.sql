@@ -46,7 +46,10 @@ SELECT dt, user_id,
 FROM dwd_order WHERE status = 'paid'
 GROUP BY dt, user_id;
 
-CREATE VIEW IF NOT EXISTS dws_region_daily AS
+-- D1 对单条语句的复合 SELECT 项数有硬上限（本地 SQLite 默认 500 无感）：
+-- 8 路 UNION ALL 直接建会报 "too many terms in compound SELECT"，
+-- 故拆成 4+4 两个子视图，顶层再用 2 项 UNION 叠层，语义与单视图完全等价
+CREATE VIEW IF NOT EXISTS dws_rdev_a AS
 SELECT dt, region, 'dau' AS metric, COUNT(DISTINCT user_id)*1.0 AS val
   FROM dwd_event WHERE event_type='app_open' GROUP BY dt, region
 UNION ALL
@@ -54,15 +57,22 @@ SELECT date(reg_dt), region, 'new_users', COUNT(*)*1.0 FROM dwd_user GROUP BY da
 UNION ALL
 SELECT dt, region, 'gmv', SUM(amount) FROM dwd_order WHERE status='paid' GROUP BY dt, region
 UNION ALL
-SELECT dt, region, 'paid_orders', COUNT(*)*1.0 FROM dwd_order WHERE status='paid' GROUP BY dt, region
-UNION ALL
-SELECT dt, region, 'pay_uv', COUNT(DISTINCT user_id)*1.0 FROM dwd_order WHERE status='paid' GROUP BY dt, region
+SELECT dt, region, 'paid_orders', COUNT(*)*1.0 FROM dwd_order WHERE status='paid' GROUP BY dt, region;
+
+CREATE VIEW IF NOT EXISTS dws_rdev_b AS
+SELECT dt, region, 'pay_uv' AS metric, COUNT(DISTINCT user_id)*1.0 AS val
+  FROM dwd_order WHERE status='paid' GROUP BY dt, region
 UNION ALL
 SELECT dt, region, 'view_uv', COUNT(DISTINCT user_id)*1.0 FROM dwd_event WHERE event_type='view_item' GROUP BY dt, region
 UNION ALL
 SELECT dt, region, 'cart_uv', COUNT(DISTINCT user_id)*1.0 FROM dwd_event WHERE event_type='add_cart' GROUP BY dt, region
 UNION ALL
 SELECT dt, region, 'checkout_uv', COUNT(DISTINCT user_id)*1.0 FROM dwd_event WHERE event_type='checkout' GROUP BY dt, region;
+
+CREATE VIEW IF NOT EXISTS dws_region_daily AS
+SELECT * FROM dws_rdev_a
+UNION ALL
+SELECT * FROM dws_rdev_b;
 
 -- ---------- ADS 应用层：面向指标/应用的宽表 ----------
 CREATE VIEW IF NOT EXISTS ads_daily_region AS

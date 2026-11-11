@@ -1,6 +1,8 @@
 # 业务 DataAgent Demo
 
 > 面向快手 2027 校招「数据 FDE 工程师—数据研发方向」的作品项目。
+
+[![ci](https://github.com/duskly-jpg/data-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/duskly-jpg/data-agent/actions/workflows/ci.yml)
 > **自然语言问「上周华东新客 7 日留存」→ 自动出 SQL 和结论**，中间用四道闸 + 三裁判把大模型幻觉治理做实。
 > 本地零凭证可跑；生产部署到 Cloudflare D1 + Workers AI + R2。
 

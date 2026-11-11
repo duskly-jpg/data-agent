@@ -222,16 +222,23 @@ async function handleAsk(request, env) {
   let q;
   try { q = (await request.json()).question || ''; } catch (_) { q = ''; }
   const anchor = env.ANCHOR_DATE || '2026-11-12';
+  const fail = (stage, reason, judges = {}, rows = []) => ({ stage, reason, judges, rows });
   let cand;
   try {
     cand = await generateCandidate(env, q, anchor);
-  } catch (e) {
-    cand = semanticRoute(q, anchor);
-    cand.source = 'semantic-route(fallback)';
-    cand.reasoning = `Workers AI 不可用(${e.message})，回退语义层基线`;
+  } catch (e1) {
+    // 语义层兜底：兜底本身也可能拒绝（问题不命中任何指标口径）——
+    // 拒绝也要走 reply() 落审计表并返回 200 JSON，绝不能把异常裸抛成 500
+    try {
+      cand = semanticRoute(q, anchor);
+      cand.source = 'semantic-route(fallback)';
+      cand.reasoning = `Workers AI 不可用(${e1.message})，回退语义层基线`;
+    } catch (e2) {
+      return await reply(env, q, { sql: '', metric_key: '', source: 'semantic-route', params: {}, reasoning: '' },
+        fail('Gate0-意图识别', e2.message));
+    }
   }
 
-  const fail = (stage, reason, judges = {}, rows = []) => ({ stage, reason, judges, rows });
   let judges = {}, rows = [];
   const g1 = gate1(cand.sql);
   if (!g1[0]) return await reply(env, q, cand, fail('Gate1-静态白名单', g1[1]));

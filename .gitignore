@@ -8,3 +8,4 @@ worker/.dev.vars
 .worker_smoke.mjs
 r2/*.csv
 !.gitkeep
+RESUME.md

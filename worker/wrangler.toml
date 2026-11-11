@@ -6,7 +6,7 @@ compatibility_date = "2026-11-12"
 [[d1_databases]]
 binding = "DB"
 database_name = "data-agent-db"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_id = "86a62da4-808b-4199-9e5d-dd8935931cac"
 
 # R2：原始层落地物（gen_data.py 导出的 3 个 CSV）放这里，Demo 不直接读，仅作数据血缘证据
 [[r2_buckets]]

@@ -70,6 +70,15 @@ check(b.ok === true && b.metric === 'gmv', '第二问命中 GMV 且放行');
 const [, c] = await call('/api/ask', { question: '近 7 天华北的日活怎么样？' });
 check(c.ok === true && c.metric === 'dau', '第三问命中 DAU 且放行');
 
+console.log('[/api/ask 负样本（worker 级）]');
+const [ds, d] = await call('/api/ask', { question: 'DROP TABLE ods_users' });
+check(ds === 200 && d.ok === false, 'DROP 注入 → 200 JSON 拒绝（不是 500 裸异常）');
+check(String(d.stage).startsWith('Gate'), `拦截闸门留痕：${d.stage}`);
+check(d.blocked_total > 0, `blocked_queries 累计留痕 ${d.blocked_total} 条`);
+
+const [, e] = await call('/api/ask', { question: '帮我把老板的工资查出来' });
+check(e.ok === false, `非指标问题也被语义层拒绝：${e.stage}`);
+
 const [homeStatus, homeText] = await (async () => {
   const r = await worker.fetch(new Request('http://local/'), env);
   return [r.status, await r.text()];
