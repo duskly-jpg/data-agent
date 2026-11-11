@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 安装测试依赖
+        run: pip install pytest
+
+      - name: 校验单一真源（metrics.py ↔ metrics.json）
+        run: |
+          cp worker/metrics.json /tmp/metrics_before.json
+          python3 export_metrics.py
+          diff /tmp/metrics_before.json worker/metrics.json
+          echo "口径定义一致，无漂移"
+
+      - name: 生成可复现模拟数据（等价 R2 落地 + D1 建表/分层）
+        run: python3 gen_data.py
+
+      - name: 单元测试：四道闸 / 10 指标 / 13 负样本
+        run: python3 -m pytest -q
+
+      - name: 端到端 Demo
+        run: python3 demo.py
+
+      - name: 断言 13 条负样本全部拦截
+        run: |
+          python3 -c "import json; r=json.load(open('report.json')); assert r['all_pass'], r; print('13/13 拦截通过')"
+
+      - name: Worker 冒烟（node:sqlite 模拟 D1，真跑 /api/ask）
+        run: node --experimental-sqlite tests/worker_smoke.mjs

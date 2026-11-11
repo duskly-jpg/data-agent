@@ -1,0 +1,10 @@
+__pycache__/
+.pytest_cache/
+*.pyc
+data.db
+report.json
+worker/.dev.vars
+.dev.vars
+.worker_smoke.mjs
+r2/*.csv
+!.gitkeep

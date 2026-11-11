@@ -1,0 +1,2 @@
+# 运行时零依赖（仅 Python 标准库）；仅测试需要 pytest
+pytest>=8.0
