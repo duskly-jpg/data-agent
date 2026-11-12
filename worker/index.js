@@ -103,12 +103,16 @@ function semanticContext() {
 async function generateCandidate(env, q, anchor) {
   if (!env.AI) return semanticRoute(q, anchor);
   const t = resolveTime(q, anchor);
+  const hitMetric = resolveMetric(q);
+  const fewshot = hitMetric
+    ? `\n参考实现（该指标的标准口径 SQL：方言、字段、参数占位符必须严格对齐；可按问题微调 WHERE，但禁止引入新表/新字段）：\n${hitMetric.sql}\n`
+    : '';
   const sys = [
     '你是 Text-to-SQL 生成器。严格依据给定口径输出 JSON，不要输出其它文字。',
     '格式：{"sql":"...","params":{"start":"YYYY-MM-DD","end":"YYYY-MM-DD","region":"..."},"metric_key":"..."}',
     '只允许单条 SELECT/WITH，禁止 SELECT *，必须参数化，禁止臆造表或字段。',
     '必须用 SQLite 方言：日期差用 julianday(a)-julianday(b)，取整用 CAST/ROUND；禁止 DATEDIFF/TIMESTAMPDIFF/IFNULL 之外的 MySQL/其他方言函数。',
-    '', semanticContext(), '',
+    '', semanticContext(), fewshot, '',
     `时间参考：今天=${anchor}，${t.note} => start=${t.start}, end=${t.end}。区域=${resolveRegion(q)}。`,
   ].join('\n');
   const model = env.LLM_MODEL || '@cf/meta/llama-3.1-8b-instruct';
@@ -184,6 +188,33 @@ function composeConclusion(c, rows) {
   return s + `（口径：${c.m.desc}）`;
 }
 
+// 自修复：闸门拒绝 AI 候选后，把报错喂回模型重生成一次（self-correction 循环）
+// 修不好仍走语义层降级——fail-closed 不变，只是给模型一次改错机会
+async function repairCandidate(env, q, cand, gateReason, anchor) {
+  if (!env.AI) return null;
+  const model = env.LLM_MODEL || '@cf/meta/llama-3.1-8b-instruct-fp8-fast';
+  const sys = [
+    '你是 SQL 修复器。此前生成的候选 SQL 被治理闸门拒绝，请依据报错修复。',
+    '输出与原格式一致的 JSON：{"sql":"...","params":{...},"metric_key":"..."}（metric_key 保持不变）。',
+    '必须用 SQLite 方言（日期差用 julianday()）；字段/表只能来自原 SQL 或报错提示；只允许单条 SELECT/WITH。',
+  ].join('\n');
+  const user = `原问题：${q}\n被拒 SQL：${cand.sql}\n拒绝原因：${gateReason}\n请修复并输出 JSON。`;
+  const resp = await env.AI.run(model, {
+    messages: [{ role: 'system', content: sys }, { role: 'user', content: user }],
+    max_tokens: 768,
+  });
+  let text = typeof resp === 'string' ? resp : (resp.response || resp.text || resp.result?.response || JSON.stringify(resp));
+  if (typeof text !== 'string') text = JSON.stringify(text);
+  const hit = text.match(/\{[\s\S]*\}/);
+  if (!hit) throw new Error('修复输出未包含 JSON');
+  const obj = JSON.parse(hit[0]);
+  return {
+    sql: obj.sql, params: obj.params, metric_key: obj.metric_key || cand.metric_key,
+    source: `workers-ai:${model}:repaired`, note: cand.note,
+    reasoning: `${model} 自修复重生成（上次被拒：${String(gateReason).slice(0, 60)}）`,
+  };
+}
+
 // D1 的 bind 是位置参数，把 :name 占位符按出现顺序转成 ? 并收集值
 function toPositional(sql, params) {
   const values = [];
@@ -241,21 +272,42 @@ function gate3(rows, m) {
 }
 
 function buildConclusion(cand, m, rows) {
-  const f = m.value_field, isRate = RATE_KEYS.has(m.key);
+  const isRate = RATE_KEYS.has(m.key);
   const region = cand.params.region || 'ALL';
   const head = `【${m.name}】${cand.note}，${region === 'ALL' ? '全区域' : region}`;
   const fmt = v => isRate ? `${Math.round(v * 10000) / 100}%` : `${Math.round(v * 100) / 100}`;
+  // LLM 生成的 SQL 列别名不固定：按候选名模糊取值，取不到就优雅省略，绝不输出 undefined
+  const pick = (r, names) => {
+    for (const n of names) {
+      if (r[n] !== undefined && r[n] !== null) return r[n];
+      const k = Object.keys(r).find(k => k.toLowerCase().includes(String(n).toLowerCase()));
+      if (k && r[k] !== undefined && r[k] !== null) return r[k];
+    }
+    return undefined;
+  };
+  const firstNum = r => { const k = Object.keys(r).find(k => typeof r[k] === 'number'); return k ? r[k] : undefined; };
+  const valueOf = r => { let v = pick(r, [m.value_field, m.key, 'value', 'val']); if (v === undefined) v = firstNum(r); return v; };
   if (rows.length === 1 || !('dt' in rows[0] || 'cohort_dt' in rows[0])) {
     const r = rows[0];
     let extra = '';
-    if (m.key === 'retention_7d') extra = `（观察窗已满的新客 ${r.new_users} 人，注册后 1~7 日内回访 ${r.retained_7d} 人）`;
-    else if (m.key === 'retention_1d') extra = `（新客 ${r.new_users} 人，次日回访 ${r.retained_1d} 人）`;
-    else if (m.key === 'repurchase_rate') extra = `（付费用户 ${r.total_users} 人，其中复购 ${r.repurchase_users} 人）`;
-    return `${head}：${fmt(r[f])}${extra}。口径：${m.desc}`;
+    if (m.key === 'retention_7d') {
+      const nu = pick(r, ['new_users', 'new_customers', 'cohort_users']);
+      const rr = pick(r, ['retained_7d', 'retained', 'retained_users']);
+      if (nu !== undefined && rr !== undefined) extra = `（观察窗已满的新客 ${nu} 人，注册后 1~7 日内回访 ${rr} 人）`;
+    } else if (m.key === 'retention_1d') {
+      const nu = pick(r, ['new_users', 'new_customers']);
+      const rr = pick(r, ['retained_1d', 'retained']);
+      if (nu !== undefined && rr !== undefined) extra = `（新客 ${nu} 人，次日回访 ${rr} 人）`;
+    } else if (m.key === 'repurchase_rate') {
+      const tu = pick(r, ['total_users', 'users']);
+      const ru = pick(r, ['repurchase_users', 'repurchasers']);
+      if (tu !== undefined && ru !== undefined) extra = `（付费用户 ${tu} 人，其中复购 ${ru} 人）`;
+    }
+    return `${head}：${fmt(valueOf(r))}${extra}。口径：${m.desc}`;
   }
   const r = rows[rows.length - 1];
   const dt = r.dt || r.cohort_dt;
-  return `${head}：共返回 ${rows.length} 行按日/区域明细，其中 ${dt} 的${m.name}为 ${fmt(r[f])}。口径：${m.desc}`;
+  return `${head}：共返回 ${rows.length} 行按日/区域明细，其中 ${dt} 的${m.name}为 ${fmt(valueOf(r))}。口径：${m.desc}`;
 }
 
 function gate4(q, sql, m, rows, conclusion) {
@@ -367,13 +419,28 @@ async function handleAsk(request, env) {
   // fail-closed 不放行幻觉数字，但语义层是验证过的基线，不该让整单失败。
   if (r.stage !== '全部通过' && cand.source && String(cand.source).startsWith('workers-ai')) {
     await logBlock(env, q, cand.sql, r.stage, r.reason, r.judges || {});
+    // 自修复一轮：报错喂回模型重生成，修复版照样完整过四道闸
     try {
-      const sem = semanticRoute(q, anchor);
-      sem.source = 'semantic-route(fallback)';
-      sem.reasoning = `AI 候选被${r.stage}拦截，降级语义层安全基线`;
-      cand = sem;
-      r = await runPipeline(sem);
-    } catch (_) { /* 语义层不命中该指标：保持原拦截结果，诚实拒答 */ }
+      const rep = await repairCandidate(env, q, cand, r.reason, anchor);
+      if (rep && M[rep.metric_key]) {
+        const r2 = await runPipeline(rep);
+        if (r2.stage === '全部通过') {
+          cand = rep; r = r2;
+        } else {
+          await logBlock(env, q, rep.sql, r2.stage, r2.reason, r2.judges || {});
+        }
+      }
+    } catch (_) { /* 修复输出无效：保持拦截结果 */ }
+    // 仍失败 → 语义层安全基线兜底（fail-closed 不变，但不断服务）
+    if (r.stage !== '全部通过') {
+      try {
+        const sem = semanticRoute(q, anchor);
+        sem.source = 'semantic-route(fallback)';
+        sem.reasoning = `AI 候选修复后仍被${r.stage}拦截，降级语义层安全基线`;
+        cand = sem;
+        r = await runPipeline(sem);
+      } catch (_) { /* 语义层不命中该指标：保持原拦截结果，诚实拒答 */ }
+    }
   }
   return await reply(env, q, cand, r);
 }
