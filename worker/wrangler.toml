@@ -17,8 +17,14 @@ bucket_name = "data-agent-raw"
 [ai]
 binding = "AI"
 
+# 演示频控：KV 计数防外人刷爆 D1 免费档日额度（读 500 万行/天）
+[[kv_namespaces]]
+binding = "RATE"
+id = "0669bf351987470789e5449befc86c3e"
+
 [vars]
 ANCHOR_DATE = "2026-11-12"
+ASK_DAILY_LIMIT = "300"
 LLM_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
 
 # 凭证绝不写进本文件：wrangler secret put LLM_TOKEN

@@ -360,6 +360,19 @@ async function handleAsk(request, env) {
   let q;
   try { q = (await request.json()).question || ''; } catch (_) { q = ''; }
   const anchor = env.ANCHOR_DATE || '2026-11-12';
+  // 演示日频控：KV 计数（无 KV 绑定则跳过）。防外人刷爆 D1 免费档日额度
+  if (env.RATE && q) {
+    try {
+      const d8 = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10); // 东八区日界
+      const key = `ask:${d8}`;
+      const cur = parseInt((await env.RATE.get(key)) || '0', 10);
+      const lim = parseInt(env.ASK_DAILY_LIMIT || '300', 10);
+      if (cur >= lim) {
+        return json({ ok: false, stage: 'RateLimit', reason: `今日演示额度已用尽（${lim} 次/天），明日自动恢复`, question: q });
+      }
+      await env.RATE.put(key, String(cur + 1), { expirationTtl: 172800 });
+    } catch (_) { /* 频控失败不拦正常提问 */ }
+  }
   const comp = detectCompose(q, anchor);       // 非预设问题优先走组合意图编译
   let cand;
   if (comp) {
