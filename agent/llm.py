@@ -14,7 +14,7 @@ import os
 import re
 import urllib.request
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import date, timedelta
 
 from metrics import METRICS, REGIONS, semantic_context
 
@@ -65,6 +65,27 @@ def resolve_time(question, anchor):
         return anchor.replace(day=1), anchor, "本自然月"
     if "近7天" in q or "最近一周" in q or "近一周" in q:
         return anchor - timedelta(days=6), anchor, "近 7 天滚动窗口"
+    if "近两周" in q or "过去两周" in q or "最近两周" in q:
+        return anchor - timedelta(days=13), anchor, "近 14 天滚动窗口"
+    if "前天" in q:
+        d = anchor - timedelta(days=2)
+        return d, d, "前天"
+    if "上个月" in q or "上月" in q:
+        first = anchor.replace(day=1)
+        last = first - timedelta(days=1)
+        return last.replace(day=1), last, "上自然月"
+    mm = re.search(r"(\d{1,2})\s*月", q)
+    if mm and 1 <= int(mm.group(1)) <= 12:
+        mth = int(mm.group(1))
+        y = anchor.year if mth <= anchor.month else anchor.year - 1
+        start = date(y, mth, 1)
+        nxt = date(y + (1 if mth == 12 else 0), 1 if mth == 12 else mth + 1, 1)
+        end = min(nxt - timedelta(days=1), anchor)
+        return start, end, f"{y} 年 {mth} 月"
+    mn = re.search(r"(?:过去|前|最近|近)\s*(\d+)\s*天", q)
+    if mn:
+        n = max(1, min(90, int(mn.group(1))))
+        return anchor - timedelta(days=n - 1), anchor, f"过去 {n} 天"
     return anchor - timedelta(days=6), anchor, "默认近 7 天滚动窗口"
 
 

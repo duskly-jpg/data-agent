@@ -29,6 +29,19 @@ QUESTIONS = [
     "全区域的复购率是多少？",
 ]
 
+# 非预设问题：不在这 10 个模板里，靠组合意图编译动态生成 SQL
+OPEN_QUESTIONS = [
+    "各区域上周 GMV 排名，谁卖得最多？",
+    "华东和华南上周 7 日留存哪个高？",
+    "最近 14 天全区域的日活走势怎么样？",
+    "上个月华东的支付转化率是多少？",
+    "10月各区域新增用户数最高的是哪个？",
+    "华东跟华北对比一下上周的客单价，差多少？",
+]
+
+# 超出口径的问题：语义层识别不到指标，应诚实拒答，不硬猜
+OUT_OF_SCOPE = "帮我分析下最近业务为啥掉了"
+
 
 def C(sql, key="retention_7d", note="对抗样例"):
     return Candidate(sql=sql, params=dict(P), metric_key=key, source="adversarial",
@@ -75,15 +88,15 @@ def main():
 
     agent = DataAgent(DB)
     print("=" * 72)
-    print(" 业务 DataAgent Demo · 快手数据 FDE 方向作品")
+    print(" 业务 DataAgent Demo")
     print(f" 数据锚点 {agent.anchor} | LLM 适配器 {agent.adapter.name} "
           f"| 数据库 SQLite(等价 D1)")
     print(" 分层 ODS → DWD → DWS → ADS | 指标 10 个 | 幻觉治理 4 道闸 + 3 裁判")
     print("=" * 72)
 
-    # ---------- 正常问句 ----------
+    # ---------- 预设问句 ----------
     for i, q in enumerate(QUESTIONS, 1):
-        r = agent.ask(q)
+        r = agent.ask_smart(q)
         print(f"\n[{i}] 提问：{q}")
         line()
         print(f"  语义层  : {r['metric']} / {r['metric_name']} | {r['note']}")
@@ -97,6 +110,26 @@ def main():
         if r["rows"]:
             print(f"  结果样本: {r['rows'][0]}")
         print(f"  ✓ 放行" if r["ok"] else f"  ✗ 拦截")
+
+    # ---------- 非预设问题：组合意图编译 ----------
+    print("\n" + "=" * 72)
+    print(" 非预设问题演示：组合意图编译 → 动态 SQL → 仍走同一套四道闸")
+    print("=" * 72)
+    open_ok = 0
+    for i, q in enumerate(OPEN_QUESTIONS, 1):
+        r = agent.ask_smart(q)
+        open_ok += int(r["ok"])
+        tag = "组合动态SQL" if r.get("composed") else "单值/新时间窗"
+        print(f"\n  [{i}] {q}")
+        print(f"      类型 {tag} | 指标 {r.get('metric','?')} | {r.get('stage','?')}")
+        print(f"      SQL  : {r.get('sql','')[:120]}…")
+        print(f"      结论 : {r.get('conclusion','')}")
+    r_oos = agent.ask_smart(OUT_OF_SCOPE)
+    oos_rejected = not r_oos["ok"]
+    print(f"\n  [超纲] {OUT_OF_SCOPE}")
+    print(f"      → {'诚实拒答（不硬猜）' if oos_rejected else '❌ 不该放行'} | "
+          f"{r_oos.get('stage')}: {r_oos.get('reason')}")
+    print(f"\n  非预设问题：{open_ok}/{len(OPEN_QUESTIONS)} 正常出结论；超纲问题诚实拒答")
 
     # ---------- 13 条负样本 ----------
     print("\n" + "=" * 72)
@@ -128,11 +161,18 @@ def main():
 
     # 机器可读报告，供 CI 断言
     import json
-    report = {"negatives": 13, "blocked": blocked, "all_pass": blocked == 13,
-              "anchor": str(agent.anchor), "adapter": agent.adapter.name}
+    report = {
+        "negatives": 13, "blocked": blocked, "all_pass": blocked == 13,
+        "open_questions": len(OPEN_QUESTIONS), "open_ok": open_ok,
+        "out_of_scope_rejected": oos_rejected,
+        "anchor": str(agent.anchor), "adapter": agent.adapter.name,
+        "seed": sqlite3.connect(DB).execute(
+            "SELECT value FROM meta WHERE key='seed'").fetchone()[0],
+    }
     with open(os.path.join(os.path.dirname(DB), "report.json"), "w", encoding="utf-8") as f:
         json.dump(report, f, ensure_ascii=False, indent=2)
-    return 0 if blocked == 13 else 1
+    ok = blocked == 13 and open_ok == len(OPEN_QUESTIONS) and oos_rejected
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":

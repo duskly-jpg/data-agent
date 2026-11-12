@@ -1,5 +1,5 @@
 -- ============================================================
--- 快手 DataAgent Demo · 数仓分层（ODS → DWD → DWS → ADS）
+-- 业务 DataAgent Demo · 数仓分层（ODS → DWD → DWS → ADS）
 -- 跑在 Cloudflare D1 / 本地 SQLite，CREATE VIEW IF NOT EXISTS 可重复执行
 -- ODS 三张物理表由 gen_data.py 建；以下全部为视图，零 ETL 调度开销
 -- ============================================================
@@ -46,12 +46,10 @@ SELECT dt, user_id,
 FROM dwd_order WHERE status = 'paid'
 GROUP BY dt, user_id;
 
--- D1 对单条语句的复合 SELECT 项数有硬上限（本地 SQLite 默认 500 无感）：
--- 8 路 UNION ALL 直接建会报 "too many terms in compound SELECT"，
--- 故拆成 4+4 两个子视图，顶层再用 2 项 UNION 叠层，语义与单视图完全等价
+-- D1 对单条语句复合 SELECT 项数有硬上限：8 路 UNION 直接建会报
+-- "too many terms in compound SELECT"，拆 4+4 子视图顶层 2 路叠加，语义等价
 CREATE VIEW IF NOT EXISTS dws_rdev_a AS
-SELECT dt, region, 'dau' AS metric, COUNT(DISTINCT user_id)*1.0 AS val
-  FROM dwd_event WHERE event_type='app_open' GROUP BY dt, region
+SELECT dt, region, 'dau' AS metric, COUNT(DISTINCT user_id)*1.0 AS val FROM dwd_event WHERE event_type='app_open' GROUP BY dt, region
 UNION ALL
 SELECT date(reg_dt), region, 'new_users', COUNT(*)*1.0 FROM dwd_user GROUP BY date(reg_dt), region
 UNION ALL
@@ -60,8 +58,7 @@ UNION ALL
 SELECT dt, region, 'paid_orders', COUNT(*)*1.0 FROM dwd_order WHERE status='paid' GROUP BY dt, region;
 
 CREATE VIEW IF NOT EXISTS dws_rdev_b AS
-SELECT dt, region, 'pay_uv' AS metric, COUNT(DISTINCT user_id)*1.0 AS val
-  FROM dwd_order WHERE status='paid' GROUP BY dt, region
+SELECT dt, region, 'pay_uv', COUNT(DISTINCT user_id)*1.0 FROM dwd_order WHERE status='paid' GROUP BY dt, region
 UNION ALL
 SELECT dt, region, 'view_uv', COUNT(DISTINCT user_id)*1.0 FROM dwd_event WHERE event_type='view_item' GROUP BY dt, region
 UNION ALL

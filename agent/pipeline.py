@@ -35,7 +35,8 @@ def build_conclusion(question, cand, metric, rows):
     r = rows[-1]
     v = r[f]
     dt = r.get("dt") or r.get("cohort_dt")
-    shown = f"{round(v * 100, 2)}%" if is_rate else f"{v:,}"
+    # 不要千分位逗号：Judge C 会把 "5,137.77" 只提取成 "5"，导致结论数字对不上被误拦
+    shown = f"{round(v * 100, 2)}%" if is_rate else f"{round(float(v), 2)}"
     return (f"{head}：共返回 {len(rows)} 行按日/区域明细，其中 {dt} 的{metric.name}为 {shown}。"
             f"口径：{metric.desc}")
 
@@ -49,7 +50,8 @@ class DataAgent:
             conn.execute("SELECT value FROM meta WHERE key='anchor_date'").fetchone()[0])
         conn.close()
 
-    def ask(self, question, candidate_override=None, conclusion_override=None):
+    def ask(self, question, candidate_override=None, conclusion_override=None,
+            conclusion_builder=None):
         try:
             cand = candidate_override or self.adapter.generate(question, self.anchor)
         except Exception as e:
@@ -58,8 +60,9 @@ class DataAgent:
             return {"ok": False, "question": question,
                     "stage": "语义层路由", "reason": str(e), "source": self.adapter.name}
 
+        # 组合查询可注入自定义结论生成器（排行/对比/趋势），仍要走 Judge C 对账
         builder = (lambda q, c, m, r: conclusion_override) if conclusion_override is not None \
-                  else build_conclusion
+                  else (conclusion_builder or build_conclusion)
         g = run_guards(self.db_path, question, cand, builder)
         metric = BY_KEY.get(cand.metric_key)
         # 拦截时绝不生成结论：失败样本的结果列可能不完整，强行渲染会 KeyError，
@@ -67,10 +70,10 @@ class DataAgent:
         conclusion = ""
         if g.passed:
             conclusion = conclusion_override if conclusion_override is not None else (
-                build_conclusion(question, cand, metric, g.rows))
+                builder(question, cand, metric, g.rows))
 
         return {
-            "ok": g.passed, "question": question,
+            "ok": g.passed, "question": question, "composed": False,
             "source": cand.source, "metric": cand.metric_key,
             "metric_name": metric.name if metric else "?",
             "sql": " ".join(cand.sql.split()), "params": cand.params,
@@ -79,3 +82,14 @@ class DataAgent:
             "rows": g.rows, "conclusion": conclusion if g.passed else "",
             "blocked_total": blocked_count(self.db_path),
         }
+
+    def ask_smart(self, question):
+        """先尝试组合意图编译（排行/对比/趋势），识别不了再走单指标链路。"""
+        from agent.compose import compile_question
+        spec = compile_question(question, self.anchor)
+        if spec is None:
+            return self.ask(question)
+        cand, builder = spec
+        r = self.ask(question, candidate_override=cand, conclusion_builder=builder)
+        r["composed"] = True
+        return r

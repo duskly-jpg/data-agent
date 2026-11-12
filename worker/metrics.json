@@ -14,7 +14,8 @@
         "七日留存",
         "7 日留存",
         "周留存",
-        "7日回访"
+        "7日回访",
+        "留存"
       ],
       "value_field": "retention_7d_rate",
       "bounds": [
@@ -25,7 +26,10 @@
       "required_tokens": [
         "ads_retention",
         "retention_7d_rate"
-      ]
+      ],
+      "source_view": "ads_retention",
+      "agg_expr": "ROUND(1.0*SUM(retained_7d)/NULLIF(SUM(new_users),0),4)",
+      "date_col": "cohort_dt"
     },
     {
       "key": "retention_1d",
@@ -51,7 +55,10 @@
       "required_tokens": [
         "ads_retention",
         "retention_1d_rate"
-      ]
+      ],
+      "source_view": "ads_retention",
+      "agg_expr": "ROUND(1.0*SUM(retained_1d)/NULLIF(SUM(new_users),0),4)",
+      "date_col": "cohort_dt"
     },
     {
       "key": "repurchase_rate",
@@ -75,7 +82,10 @@
       "required_tokens": [
         "ads_repurchase",
         "repurchase_rate"
-      ]
+      ],
+      "source_view": "ads_repurchase",
+      "agg_expr": "ROUND(1.0*SUM(repurchase_users)/NULLIF(SUM(total_users),0),4)",
+      "date_col": ""
     },
     {
       "key": "order_cvr",
@@ -102,7 +112,10 @@
         "ads_daily_region",
         "checkout_uv",
         "view_uv"
-      ]
+      ],
+      "source_view": "ads_daily_region",
+      "agg_expr": "ROUND(1.0*SUM(checkout_uv)/NULLIF(SUM(view_uv),0),4)",
+      "date_col": "dt"
     },
     {
       "key": "pay_cvr",
@@ -128,7 +141,10 @@
         "ads_daily_region",
         "pay_uv",
         "checkout_uv"
-      ]
+      ],
+      "source_view": "ads_daily_region",
+      "agg_expr": "ROUND(1.0*SUM(pay_uv)/NULLIF(SUM(checkout_uv),0),4)",
+      "date_col": "dt"
     },
     {
       "key": "aov",
@@ -155,7 +171,10 @@
         "ads_daily_region",
         "paid_orders",
         "gmv"
-      ]
+      ],
+      "source_view": "ads_daily_region",
+      "agg_expr": "ROUND(1.0*SUM(gmv)/NULLIF(SUM(paid_orders),0),2)",
+      "date_col": "dt"
     },
     {
       "key": "gmv",
@@ -171,7 +190,8 @@
         "成交额",
         "成交总额",
         "销售额",
-        "营收"
+        "营收",
+        "卖了多少"
       ],
       "value_field": "gmv",
       "bounds": [
@@ -182,7 +202,10 @@
       "required_tokens": [
         "ads_daily_region",
         "gmv"
-      ]
+      ],
+      "source_view": "ads_daily_region",
+      "agg_expr": "SUM(gmv)",
+      "date_col": "dt"
     },
     {
       "key": "new_users",
@@ -209,7 +232,10 @@
       "required_tokens": [
         "ads_daily_region",
         "new_users"
-      ]
+      ],
+      "source_view": "ads_daily_region",
+      "agg_expr": "SUM(new_users)",
+      "date_col": "dt"
     },
     {
       "key": "dau",
@@ -235,7 +261,10 @@
       "required_tokens": [
         "ads_daily_region",
         "dau"
-      ]
+      ],
+      "source_view": "ads_daily_region",
+      "agg_expr": "SUM(dau)",
+      "date_col": "dt"
     },
     {
       "key": "mau",
@@ -259,7 +288,10 @@
       "required_tokens": [
         "dwd_event",
         "COUNT(DISTINCT"
-      ]
+      ],
+      "source_view": "dwd_event",
+      "agg_expr": "COUNT(DISTINCT user_id)",
+      "date_col": "dt"
     }
   ],
   "allowed_tables": [
@@ -278,5 +310,8 @@
     "西南",
     "西北",
     "东北"
+  ],
+  "compose_exclude": [
+    "mau"
   ]
 }

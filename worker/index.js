@@ -48,7 +48,35 @@ function resolveTime(q, anchor) {
   if (q.includes('昨日') || q.includes('昨天')) return { start: iso(shift(-1)), end: iso(shift(-1)), note: '昨日' };
   if (q.includes('近30天') || q.includes('最近一个月')) return { start: iso(shift(-29)), end: anchor, note: '近 30 天滚动窗口' };
   if (q.includes('本月'))   return { start: anchor.slice(0, 8) + '01', end: anchor, note: '本自然月' };
-  return { start: iso(shift(-6)), end: anchor, note: q.includes('近7天') || q.includes('最近一周') ? '近 7 天滚动窗口' : '默认近 7 天滚动窗口' };
+  if (q.includes('近7天') || q.includes('最近一周') || q.includes('近一周'))
+    return { start: iso(shift(-6)), end: anchor, note: '近 7 天滚动窗口' };
+  if (q.includes('近两周') || q.includes('过去两周') || q.includes('最近两周'))
+    return { start: iso(shift(-13)), end: anchor, note: '近 14 天滚动窗口' };
+  if (q.includes('前天')) return { start: iso(shift(-2)), end: iso(shift(-2)), note: '前天' };
+  if (q.includes('上个月') || q.includes('上月')) {
+    const first = new Date(Date.UTC(a.getUTCFullYear(), a.getUTCMonth(), 1));
+    const last = new Date(first); last.setUTCDate(last.getUTCDate() - 1);
+    const start = new Date(Date.UTC(last.getUTCFullYear(), last.getUTCMonth(), 1));
+    return { start: iso(start), end: iso(last), note: '上自然月' };
+  }
+  const mm = q.match(/(\d{1,2})\s*月/);
+  if (mm) {
+    const mth = Number(mm[1]);
+    if (mth >= 1 && mth <= 12) {
+      const y = mth <= a.getUTCMonth() + 1 ? a.getUTCFullYear() : a.getUTCFullYear() - 1;
+      const start = new Date(Date.UTC(y, mth - 1, 1));
+      const nxt = new Date(Date.UTC(y + (mth === 12 ? 1 : 0), mth === 12 ? 0 : mth, 1));
+      let end = new Date(nxt); end.setUTCDate(end.getUTCDate() - 1);
+      if (iso(end) > anchor) end = a;
+      return { start: iso(start), end: iso(end), note: `${y} 年 ${mth} 月` };
+    }
+  }
+  const mn = q.match(/(?:过去|前|最近|近)\s*(\d+)\s*天/);
+  if (mn) {
+    const n = Math.max(1, Math.min(90, Number(mn[1])));
+    return { start: iso(shift(-(n - 1))), end: anchor, note: `过去 ${n} 天` };
+  }
+  return { start: iso(shift(-6)), end: anchor, note: '默认近 7 天滚动窗口' };
 }
 
 function semanticRoute(q, anchor) {
@@ -79,6 +107,7 @@ async function generateCandidate(env, q, anchor) {
     '你是 Text-to-SQL 生成器。严格依据给定口径输出 JSON，不要输出其它文字。',
     '格式：{"sql":"...","params":{"start":"YYYY-MM-DD","end":"YYYY-MM-DD","region":"..."},"metric_key":"..."}',
     '只允许单条 SELECT/WITH，禁止 SELECT *，必须参数化，禁止臆造表或字段。',
+    '必须用 SQLite 方言：日期差用 julianday(a)-julianday(b)，取整用 CAST/ROUND；禁止 DATEDIFF/TIMESTAMPDIFF/IFNULL 之外的 MySQL/其他方言函数。',
     '', semanticContext(), '',
     `时间参考：今天=${anchor}，${t.note} => start=${t.start}, end=${t.end}。区域=${resolveRegion(q)}。`,
   ].join('\n');
@@ -97,6 +126,62 @@ async function generateCandidate(env, q, anchor) {
     source: `workers-ai:${model}`, note: t.note,
     reasoning: `${model} 生成，上下文为 semanticContext() 缓存片段`,
   };
+}
+
+// ---------- 组合意图编译：排行 / 多区域对比 / 趋势（非预设问题） ----------
+const RANK_WORDS = ['各区域', '所有区域', '每个区域', '排名', '排行', 'top', '最高', '最大',
+                    '最好', '哪个区域', '谁最', '分布', '对比一下', '比较一下'];
+const COMPARE_WORDS = ['和', '跟', '与', 'vs', '对比', '相比', '哪个高', '谁更', '差多少'];
+const TREND_WORDS = ['趋势', '走势', '变化', '每天', '逐日', '这几天', '波动', '涨了', '跌了'];
+
+function detectCompose(q, anchor) {
+  const m = resolveMetric(q);
+  if (!m || SPEC.compose_exclude.includes(m.key) || !m.source_view) return null;
+  const ql = q.toLowerCase();
+  const regions = SPEC.regions.filter(r => q.includes(r));
+  let kind = null;
+  if (TREND_WORDS.some(w => ql.includes(w)) && m.date_col) kind = 'trend';
+  else if (regions.length >= 2 && COMPARE_WORDS.some(w => ql.includes(w))) kind = 'compare';
+  else if (RANK_WORDS.some(w => ql.includes(w))) kind = 'rank';
+  if (!kind) return null;
+  const t = resolveTime(q, anchor);
+  return { kind, m, regions, note: t.note, start: t.start, end: t.end };
+}
+
+function buildComposeSql(c) {
+  const f = c.m.value_field;
+  const where = c.m.date_col ? `WHERE ${c.m.date_col} BETWEEN :start AND :end` : '';
+  const sql = c.kind === 'trend'
+    ? `SELECT ${c.m.date_col} AS dt, ${c.m.agg_expr} AS ${f} FROM ${c.m.source_view} ${where} GROUP BY ${c.m.date_col} ORDER BY dt LIMIT 200`
+    : `SELECT region, ${c.m.agg_expr} AS ${f} FROM ${c.m.source_view} ${where} GROUP BY region ORDER BY ${f} DESC LIMIT 20`;
+  return {
+    sql: sql.replace(/\s+/g, ' ').trim(),
+    params: c.m.date_col ? { start: c.start, end: c.end } : {},
+  };
+}
+
+function composeConclusion(c, rows) {
+  const f = c.m.value_field, isRate = RATE_KEYS.has(c.m.key);
+  const fmt = v => isRate ? `${Math.round(v * 10000) / 100}%` : `${Math.round(v * 100) / 100}`;
+  if (c.kind === 'trend') {
+    const a = rows[0], b = rows[rows.length - 1], d = b[f] - a[f];
+    const word = d > 0 ? '上升' : (d < 0 ? '下降' : '持平');
+    return `【${c.m.name}趋势】${c.note}，共 ${rows.length} 天：${a.dt} 为 ${fmt(a[f])}，${b.dt} 为 ${fmt(b[f])}，整体${word} ${fmt(Math.abs(d))}。（口径：${c.m.desc}）`;
+  }
+  const ordered = [...rows].sort((x, y) => y[f] - x[f]);
+  const top = ordered[0], bot = ordered[ordered.length - 1];
+  let s = `【${c.m.name}区域排行】${c.note}，共 ${rows.length} 个区域：最高 ${top.region}，为 ${fmt(top[f])}；最低 ${bot.region}，为 ${fmt(bot[f])}。`;
+  if (c.kind === 'compare' && c.regions.length >= 2) {
+    const lk = Object.fromEntries(rows.map(r => [r.region, r[f]]));
+    const [a, b] = c.regions;
+    if (lk[a] !== undefined && lk[b] !== undefined) {
+      const d = lk[a] - lk[b];
+      const lead = d > 0 ? a : (d < 0 ? b : '两者');
+      const df = isRate ? `${Math.round(Math.abs(d) * 10000) / 100}pp` : `${Math.round(Math.abs(d) * 100) / 100}`;
+      s += ` 对比结果：${a} 为 ${fmt(lk[a])}，${b} 为 ${fmt(lk[b])}，${lead}${d ? '领先' : '持平'} ${df}。`;
+    }
+  }
+  return s + `（口径：${c.m.desc}）`;
 }
 
 // D1 的 bind 是位置参数，把 :name 占位符按出现顺序转成 ? 并收集值
@@ -223,55 +308,74 @@ async function handleAsk(request, env) {
   let q;
   try { q = (await request.json()).question || ''; } catch (_) { q = ''; }
   const anchor = env.ANCHOR_DATE || '2026-11-12';
-  const fail = (stage, reason, judges = {}, rows = []) => ({ stage, reason, judges, rows });
+  const comp = detectCompose(q, anchor);       // 非预设问题优先走组合意图编译
   let cand;
-  try {
-    cand = await generateCandidate(env, q, anchor);
-  } catch (e1) {
-    // 语义层兜底：兜底本身也可能拒绝（问题不命中任何指标口径）——
-    // 拒绝也要走 reply() 落审计表并返回 200 JSON，绝不能把异常裸抛成 500
+  if (comp) {
+    const cs = buildComposeSql(comp);
+    cand = {
+      sql: cs.sql, params: cs.params, metric_key: comp.m.key,
+      source: 'composed-sql', note: comp.note,
+      reasoning: `组合意图编译 kind=${comp.kind}；聚合规格来自 metrics.json（与 Python 同源）；动态 SQL 非模板，仍完整过四道闸`,
+    };
+  } else {
     try {
-      cand = semanticRoute(q, anchor);
-      cand.source = 'semantic-route(fallback)';
-      cand.reasoning = `Workers AI 不可用(${e1.message})，回退语义层基线`;
-    } catch (e2) {
-      return await reply(env, q, { sql: '', metric_key: '', source: 'semantic-route', params: {}, reasoning: '' },
-        fail('Gate0-意图识别', e2.message));
+      cand = await generateCandidate(env, q, anchor);
+    } catch (e) {
+      try {
+        cand = semanticRoute(q, anchor);
+        cand.source = 'semantic-route(fallback)';
+        cand.reasoning = `Workers AI 不可用(${e.message})，回退语义层基线`;
+      } catch (e2) {
+        // 识别不到指标：诚实拒答，不硬猜、不编 SQL
+        return json({
+          ok: false, question: q, stage: '语义层路由', reason: e2.message,
+          judges: {}, rows: [], conclusion: '', blocked_total: await blockedTotal(env),
+        });
+      }
     }
   }
 
-  let judges = {}, rows = [];
-  const g1 = gate1(cand.sql);
-  if (!g1[0]) return await reply(env, q, cand, fail('Gate1-静态白名单', g1[1]));
+  const fail = (stage, reason, judges = {}, rows = []) => ({ stage, reason, judges, rows });
 
-  const g2 = gate2(cand.sql);
-  if (!g2[0]) return await reply(env, q, cand, fail('Gate2-字段表校验', g2[1]));
+  const runPipeline = async (c) => {
+    const g1 = gate1(c.sql);
+    if (!g1[0]) return fail('Gate1-静态白名单', g1[1]);
+    const g2 = gate2(c.sql);
+    if (!g2[0]) return fail('Gate2-字段表校验', g2[1]);
+    const m = M[c.metric_key];
+    if (!m) return fail('Gate3-量级校验', '候选指标不在语义层注册表中');
+    let positional;
+    try { positional = toPositional(c.sql, c.params); }
+    catch (e) { return fail('Gate2-参数绑定', e.message); }
+    let rows = [];
+    try {
+      const res = await env.DB.prepare(positional.sql).bind(...positional.values).all();
+      rows = res.results || [];
+    } catch (e) {
+      return fail('Gate2-只读执行', `执行失败（字段臆造/参数错误）：${e.message}`);
+    }
+    const g3 = gate3(rows, m);
+    if (!g3[0]) return fail('Gate3-量级校验', g3[1], {}, rows);
+    const conclusion = comp ? composeConclusion(comp, rows) : buildConclusion(c, m, rows);
+    const g4 = gate4(q, c.sql, m, rows, conclusion);
+    if (!g4[0]) return fail('Gate4-三裁判', g4[2], g4[1], rows);
+    return { stage: '全部通过', reason: '四道闸全部通过', judges: g4[1], rows, conclusion };
+  };
 
-  const m = M[cand.metric_key];
-  if (!m) return await reply(env, q, cand, fail('Gate3-量级校验', '候选指标不在语义层注册表中'));
-
-  let positional;
-  try { positional = toPositional(cand.sql, cand.params); }
-  catch (e) { return await reply(env, q, cand, fail('Gate2-参数绑定', e.message)); }
-
-  try {
-    const res = await env.DB.prepare(positional.sql).bind(...positional.values).all();
-    rows = res.results || [];
-  } catch (e) {
-    return await reply(env, q, cand, fail('Gate2-只读执行', `执行失败（字段臆造/参数错误）：${e.message}`));
+  let r = await runPipeline(cand);
+  // AI 候选被闸门拦下：先留痕，再降级语义层安全基线重试一次。
+  // fail-closed 不放行幻觉数字，但语义层是验证过的基线，不该让整单失败。
+  if (r.stage !== '全部通过' && cand.source && String(cand.source).startsWith('workers-ai')) {
+    await logBlock(env, q, cand.sql, r.stage, r.reason, r.judges || {});
+    try {
+      const sem = semanticRoute(q, anchor);
+      sem.source = 'semantic-route(fallback)';
+      sem.reasoning = `AI 候选被${r.stage}拦截，降级语义层安全基线`;
+      cand = sem;
+      r = await runPipeline(sem);
+    } catch (_) { /* 语义层不命中该指标：保持原拦截结果，诚实拒答 */ }
   }
-
-  const g3 = gate3(rows, m);
-  if (!g3[0]) return await reply(env, q, cand, fail('Gate3-量级校验', g3[1], {}, rows));
-
-  const conclusion = buildConclusion(cand, m, rows);
-  const g4 = gate4(q, cand.sql, m, rows, conclusion);
-  judges = g4[1];
-  if (!g4[0]) return await reply(env, q, cand, fail('Gate4-三裁判', g4[2], judges, rows));
-
-  return await reply(env, q, cand, {
-    stage: '全部通过', reason: '四道闸全部通过', judges, rows, conclusion,
-  });
+  return await reply(env, q, cand, r);
 }
 
 async function reply(env, q, cand, g) {

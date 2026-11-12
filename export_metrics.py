@@ -6,7 +6,7 @@
 import json
 import os
 
-from metrics import METRICS, ALLOWED_TABLES, REGIONS
+from metrics import METRICS, ALLOWED_TABLES, REGIONS, COMPOSE_EXCLUDE
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 out = {
@@ -16,11 +16,13 @@ out = {
             "sql": m.sql, "keywords": m.keywords, "value_field": m.value_field,
             "bounds": list(m.bounds), "max_rows": m.max_rows,
             "required_tokens": m.required_tokens,
+            "source_view": m.source_view, "agg_expr": m.agg_expr, "date_col": m.date_col,
         }
         for m in METRICS
     ],
     "allowed_tables": sorted(ALLOWED_TABLES),
     "regions": REGIONS,
+    "compose_exclude": sorted(COMPOSE_EXCLUDE),
 }
 path = os.path.join(HERE, "worker", "metrics.json")
 with open(path, "w", encoding="utf-8") as f:
