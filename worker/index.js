@@ -529,7 +529,35 @@ async function ask(){
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 </script></body></html>`;
 
+// ---------- ADS/DWS 物化层 ----------
+// 口径真源 = sql/schema.sql（此处内嵌同源副本，schema 改了必须同步这里）
+// 物化动机：实时视图每次提问都从 ods 底表全量聚合（单问几十万行读），
+// D1 免费档 500 万行读/天扛不住；物化后单问读降两个数量级。
+const MV_DEFS = [
+  ['dws_region_daily_mv', `SELECT * FROM dws_rdev_a UNION ALL SELECT * FROM dws_rdev_b`],
+  ['ads_daily_region_mv', `SELECT dt, region,   SUM(CASE WHEN metric='dau'          THEN val ELSE 0 END) AS dau,   SUM(CASE WHEN metric='new_users'    THEN val ELSE 0 END) AS new_users,   SUM(CASE WHEN metric='gmv'          THEN val ELSE 0 END) AS gmv,   SUM(CASE WHEN metric='paid_orders'  THEN val ELSE 0 END) AS paid_orders,   SUM(CASE WHEN metric='pay_uv'       THEN val ELSE 0 END) AS pay_uv,   SUM(CASE WHEN metric='view_uv'      THEN val ELSE 0 END) AS view_uv,   SUM(CASE WHEN metric='cart_uv'      THEN val ELSE 0 END) AS cart_uv,   SUM(CASE WHEN metric='checkout_uv'  THEN val ELSE 0 END) AS checkout_uv FROM dws_region_daily GROUP BY dt, region`],
+  ['ads_retention_mv', `WITH cohort AS (   SELECT u.user_id, u.region, u.reg_dt   FROM dwd_user u, meta m   WHERE m.key = 'anchor_date'     AND u.reg_dt <= date(m.value, '-7 day') ), rev AS (   SELECT c.user_id, c.reg_dt, c.region,     MAX(CASE WHEN e.dt > c.reg_dt AND e.dt <= date(c.reg_dt,'+1 day')               AND e.event_type='app_open' THEN 1 ELSE 0 END) AS r1,     MAX(CASE WHEN e.dt > c.reg_dt AND e.dt <= date(c.reg_dt,'+7 day')               AND e.event_type='app_open' THEN 1 ELSE 0 END) AS r7   FROM cohort c LEFT JOIN dwd_event e ON e.user_id = c.user_id   GROUP BY c.user_id, c.reg_dt, c.region ) SELECT reg_dt AS cohort_dt, region,        COUNT(*) AS new_users,        SUM(r1)  AS retained_1d,        ROUND(1.0*SUM(r1)/COUNT(*), 4) AS retention_1d_rate,        SUM(r7)  AS retained_7d,        ROUND(1.0*SUM(r7)/COUNT(*), 4) AS retention_7d_rate FROM rev GROUP BY reg_dt, region`],
+  ['ads_repurchase_mv', `WITH u AS (   SELECT user_id, region, COUNT(DISTINCT dt) AS buy_days   FROM dwd_order WHERE status='paid'   GROUP BY user_id, region ) SELECT region,        SUM(CASE WHEN buy_days>=2 THEN 1 ELSE 0 END) AS repurchase_users,        COUNT(*) AS total_users,        ROUND(1.0*SUM(CASE WHEN buy_days>=2 THEN 1 ELSE 0 END)/COUNT(*), 4) AS repurchase_rate FROM u GROUP BY region`],
+];
+
+async function refreshMaterialized(env) {
+  const counts = {};
+  for (const [tbl, srcSql] of MV_DEFS) {
+    await env.DB.batch([
+      env.DB.prepare(`DELETE FROM ${tbl}`),
+      env.DB.prepare(`INSERT INTO ${tbl} ${srcSql}`),
+    ]);
+    const r = await env.DB.prepare(`SELECT COUNT(*) AS n FROM ${tbl}`).all();
+    counts[tbl] = r.results && r.results[0] ? r.results[0].n : 0;
+  }
+  return counts;
+}
+
 export default {
+  // 定时刷新物化表：北京 02:40 低峰期跑一遍（数据重灌后也会自动追平）
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(refreshMaterialized(env).catch(() => {}));
+  },
   async fetch(request, env) {
     const u = new URL(request.url);
     if (request.method === 'OPTIONS') return json({}, 204);
@@ -543,6 +571,14 @@ export default {
     }
     if (u.pathname === '/api/metrics') {
       return json(SPEC.metrics.map(m => ({ key: m.key, name: m.name, desc: m.desc, dims: m.dims })));
+    }
+    if (u.pathname === '/api/admin/refresh' && request.method === 'POST') {
+      // 手动刷新物化表（数据重灌后即时追平）：需 X-Refresh-Token
+      if (!env.REFRESH_TOKEN || request.headers.get('X-Refresh-Token') !== env.REFRESH_TOKEN) {
+        return json({ ok: false, reason: 'unauthorized' }, 401);
+      }
+      const counts = await refreshMaterialized(env);
+      return json({ ok: true, refreshed: counts, at: new Date().toISOString() });
     }
     if (u.pathname === '/api/ask' && request.method === 'POST') return handleAsk(request, env);
     return json({ error: 'not found' }, 404);

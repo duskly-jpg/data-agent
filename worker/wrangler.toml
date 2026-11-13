@@ -13,6 +13,10 @@ database_id = "86a62da4-808b-4199-9e5d-dd8935931cac"
 binding = "R2"
 bucket_name = "data-agent-raw"
 
+# 定时刷新物化表（北京 02:40）
+[triggers]
+crons = ["40 18 * * *"]
+
 # Workers AI：Text-to-SQL 模型；未配置时 Worker 自动回退语义层路由，Demo 仍可用
 [ai]
 binding = "AI"
