@@ -257,3 +257,11 @@ SQL / 四道闸 / 三裁判 / 结论的完整 JSON，可直接对外演示。
 | 换模型 | `LLM_MODEL`（vars）或 `llm.py::HTTPAdapter` | 无需改治理逻辑 |
 | 加负样本 | `demo.py::NEGATIVES` + `tests/test_guard.py` | 跑 `pytest -q` |
 | 平移数据时间窗 | `gen_data.py::ANCHOR` + `ANCHOR_DATE` | 两处保持一致 |
+
+## 相关仓库
+
+- [`huandou`](https://github.com/duskly-jpg/huandou) — 浏览器客户端（本仓治理方法论在其他生产场景的姊妹实现）
+- [`huandou-attest`](https://github.com/duskly-jpg/huandou-attest) — Key Attestation 验签后端（同样以负样本回归为验收底线）
+- [`offense-lab`](https://github.com/duskly-jpg/offense-lab) — 授权攻防靶场（三裁判评审方法论来源）
+- [`cloud-infra`](https://github.com/duskly-jpg/cloud-infra) — 边缘服务通用组件（本仓 worker 的部署纪律出处）
+- [`dobby-handbook`](https://github.com/duskly-jpg/dobby-handbook) — 全套纪律的沉淀课本
