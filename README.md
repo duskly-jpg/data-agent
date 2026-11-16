@@ -22,7 +22,7 @@
 cd data-agent
 python3 gen_data.py        # 灌模拟数据 + 建分层视图（等价 R2 落地 + D1 建表）
 python3 demo.py            # 5 个正常问句全链路 + 13 条负样本对抗测试
-python3 -m pytest -q       # 16 个单元测试
+python3 -m pytest -q       # 19 个单元测试（含 CTE 夹带写/UNION 拼外表/空值率超标等二轮负样本）
 
 # 想要真随机数据（每次业务数据都不同）
 DATA_SEED=random python3 gen_data.py && python3 demo.py
@@ -68,7 +68,7 @@ data-agent/
 │   ├── metrics.json        # 由 export_metrics.py 生成，与 Python 同源
 │   └── wrangler.toml       # D1 / R2 / Workers AI 绑定
 ├── tests/
-│   ├── test_guard.py       # 四道闸 + authorizer + 13 负样本
+│   ├── test_guard.py       # 四道闸 + authorizer + 13 负样本 + 二轮对抗补测
 │   ├── test_pipeline.py    # 分层视图 / 10 指标 / 留存真实性 / 端到端
 │   └── worker_smoke.mjs    # node:sqlite 模拟 D1，真跑 Worker /api/ask
 └── .github/workflows/ci.yml
